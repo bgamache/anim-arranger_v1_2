@@ -131,6 +131,7 @@ export interface GraphicTimelineClip {
   description: string;
   color: string;
   content?: string;
+  fontFamily?: string;
   fontSize?: number;
   lineHeight?: number;
   textColor?: string;

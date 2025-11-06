@@ -14,9 +14,9 @@ import type {
   BackgroundImageMeta,
   TransitionSpec,
 } from "@/types/storyboard";
+import { addBackgroundExportFields } from "@/lib/export/backgroundFields";
 
 /* ----------------------------- Shared helpers ----------------------------- */
-
 const n = (v: any, fb = 0): number =>
   typeof v === "number" && Number.isFinite(v) ? v : fb;
 
@@ -34,11 +34,43 @@ const durationOf = (c: { duration?: number; endTime?: number; startTime?: number
 const endOf = (c: { endTime?: number; duration?: number; startTime?: number; start?: number }) =>
   Number.isFinite(c?.endTime) ? n(c.endTime) : startOf(c) + durationOf(c);
 
+function projectFps(project: any): number {
+  return Number(project?.settings?.fps ?? project?.timeline?.fps ?? 30);
+}
+
 /** Escape for CSV cell */
 function csvEscape(v: string): string {
   if (v == null) return "";
   const str = String(v);
   return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+}
+
+function createTrackIdSimplifier() {
+   const seen = new Map<string, string>();
+   let count = 0;
+   const pad = (n: number) => n.toString().padStart(3, "0");
+   return (orig: unknown) => {
+     const key = String(orig ?? "");
+     if (!seen.has(key)) { count = 1; seen.set(key, pad(count)); }
+     return seen.get(key)!;
+   };
+ }
+
+/** Replace the column named "trackId" (case-insensitive) using a mapper. */
+function simplifyTrackIdsForCsv(
+  headers: string[],
+  rows: Array<Array<string | number>>,
+  mapFn: (orig: unknown) => string
+) {
+  const idx = headers.findIndex(
+    (h) => h.toLowerCase() === "trackid" || h.toLowerCase() === "track_id"
+  );
+  if (idx < 0) return rows;
+  return rows.map((r) => {
+    const out = [...r];
+    out[idx] = mapFn(out[idx]);
+    return out;
+  });
 }
 
 /* Resolve per-clip "character set" label with fallbacks */
@@ -123,6 +155,14 @@ export function downloadCSV(filename: string, csv: string) {
   URL.revokeObjectURL(url);
 }
 
+function pickGraphicTransition(clip: any, which: "in" | "out") {
+  const direct = which === "in" ? clip?.transitionIn : clip?.transitionOut;
+  const plural = which === "in" ? clip?.transitionsIn : clip?.transitionsOut;
+  const nested = clip?.transitions && clip.transitions[which];
+  const metaDirect = which === "in" ? clip?.meta?.transitionIn : clip?.meta?.transitionOut;
+  const metaPlural = which === "in" ? clip?.meta?.transitionsIn : clip?.meta?.transitionsOut;
+  return plural || direct || nested || metaPlural || metaDirect || undefined;
+}
 /* ----------------------------- Actions CSV ----------------------------- */
 
 /**
@@ -480,6 +520,7 @@ function sanitizeDisplayLabel(raw: string, source: any): string {
 export function exportGraphicsToCSV(
   { graphicTracks, backgroundTracks = [], fps = 24, graphicThumbnails = {} }: ExportGraphicsArgs
 ): string {
+  const mapTrackId = createTrackIdSimplifier();
   const headers = [
     // common
     "rowType",           // "graphic" | "background"
@@ -493,7 +534,8 @@ export function exportGraphicsToCSV(
 
     // geometry (graphics only)
     "x", "y", "width", "height",
-    "text", "textColor", "bgColor", "radius", "color", "imageSrc", "emojiUnicode",
+    "text", "textColor", "fontFamily",
+    "fontSize", "bgColor", "radius", "color", "imageSrc", "emojiUnicode",
 
     // transitions (both)
     "transitionIn.type",
@@ -564,12 +606,18 @@ export function exportGraphicsToCSV(
       );
       const emojiUnicode = toUnicodePoints(str(c.icon ?? ""));
 
-      const tin = serializeTransition(c.transitionIn);
-      const tout = serializeTransition(c.transitionOut);
+      const fontFamily = String((c as any)?.fontFamily ?? (c as any)?.meta?.fontFamily ?? "");
+      const fontSizePx = (() => {
+        const v = (c as any)?.fontSize ?? (c as any)?.meta?.fontSize;
+        return (typeof v === "number" && Number.isFinite(v)) ? String(v) : "";
+      })();
+
+      const tin = serializeTransition(pickGraphicTransition(c, "in"));
+      const tout = serializeTransition(pickGraphicTransition(c, "out"));
 
       rows.push([
         "graphic",
-        str(gTrack.id),
+        mapTrackId(gTrack.id),
         str(c.id),
         clipName,
         str(c.type ?? ""),
@@ -584,6 +632,8 @@ export function exportGraphicsToCSV(
         toPixelCoordinate(c.height, EXPORT_STAGE_HEIGHT),
         str(c.content ?? ""),      // text content
         str(c.textColor ?? ""),
+        fontFamily,
+        fontSizePx,
         str(c.bgColor ?? ""),
         String(c.radius ?? ""),
         str(c.color ?? ""),
@@ -682,7 +732,7 @@ export function exportGraphicsToCSV(
 
           const start = secToFrames(startFrame, fps);
           const end = secToFrames(endFrame, fps);
-          const duration = Math.max(0, endFrame - startFrame);
+          const duration = Math.max(0, end - start);
 
           const source = mergeBackgroundSources(track, clip);
           out.push({
@@ -720,7 +770,7 @@ export function exportGraphicsToCSV(
 
       const start = secToFrames(startFrame, fps);
       const end = secToFrames(endFrame, fps);
-      const duration = Math.max(0, endFrame - startFrame);
+      const duration = Math.max(0, end - start);
 
       const source = mergeBackgroundSources(track, null);
       out.push({
@@ -753,9 +803,32 @@ export function exportGraphicsToCSV(
       if (sanitizedValue) bgMeta.value = sanitizedValue;
     }
 
+  // --- NEW: compute pixel geometry for background images and write into base columns ---
+  // Prefer explicit geometry on the background source (or its meta).
+    const srcAny: any = bgRow.source ?? {};
+    const gxRaw = (typeof srcAny.x === "number" ? srcAny.x : (typeof srcAny?.meta?.x === "number" ? srcAny.meta.x : undefined));
+    const gyRaw = (typeof srcAny.y === "number" ? srcAny.y : (typeof srcAny?.meta?.y === "number" ? srcAny.meta.y : undefined));
+    const gwRaw = (typeof srcAny.width === "number" ? srcAny.width : (typeof srcAny?.meta?.width === "number" ? srcAny.meta.width : undefined));
+    const ghRaw = (typeof srcAny.height === "number" ? srcAny.height : (typeof srcAny?.meta?.height === "number" ? srcAny.meta.height : undefined));
+
+    // If any geometry provided, convert (fractions -> pixels); otherwise default to full stage.
+    const hasAnyGeom = [gxRaw, gyRaw, gwRaw, ghRaw].some(v => typeof v === "number" && Number.isFinite(v));
+    const xPx = bgRow.kind === "image"
+      ? (hasAnyGeom ? toPixelCoordinate(gxRaw ?? 0, EXPORT_STAGE_WIDTH) : "0")
+      : "";
+    const yPx = bgRow.kind === "image"
+      ? (hasAnyGeom ? toPixelCoordinate(gyRaw ?? 0, EXPORT_STAGE_HEIGHT) : "0")
+      : "";
+    const wPx = bgRow.kind === "image"
+      ? (hasAnyGeom ? toPixelCoordinate(gwRaw ?? EXPORT_STAGE_WIDTH, EXPORT_STAGE_WIDTH) : String(EXPORT_STAGE_WIDTH))
+      : "";
+    const hPx = bgRow.kind === "image"
+      ? (hasAnyGeom ? toPixelCoordinate(ghRaw ?? EXPORT_STAGE_HEIGHT, EXPORT_STAGE_HEIGHT) : String(EXPORT_STAGE_HEIGHT))
+      : "";
+
     rows.push([
       "background",
-      bgRow.trackId,
+      mapTrackId(bgRow.trackId),
       bgRow.clipId,
       sanitizedName,
       bgRow.kind,
@@ -763,11 +836,18 @@ export function exportGraphicsToCSV(
       String(bgRow.end),
       String(bgRow.duration),
 
-      // geometry not applicable
-      "", "", "", "",
-      "", "", "", "", "", "",
-      "", "",
-
+      // geometry (now populated for background *image* rows)
+      xPx, yPx, wPx, hPx,
+       "",
+       "",
+       "",
+       "",
+       "",
+       "",
+       "",
+       "",
+       "",
+       
       // transitions
       tin.type, tin.duration, tin.ease,
       tout.type, tout.duration, tout.ease,
