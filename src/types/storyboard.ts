@@ -63,7 +63,8 @@ export type TransitionKey =
 export interface TransitionSpec {
   type: TransitionKey;              // single discriminant
   duration: number;                 // ms
-  ease: string;                     // e.g. "ease", "linear", "ease-in-out"
+  ease?: string;                    // normalized property
+  easing?: string;                  // legacy alias kept for back-compat
   // Optional params when relevant:
   axis?: "x" | "y";
   distance?: number;                // px
@@ -140,9 +141,13 @@ export interface GraphicTimelineClip {
   width?: number;
   height?: number;
   meta?: ClipMetadata;
-  // NEW – optional so old projects don’t break
+  /** Canonical transition slots used by the editor */
   transitionsIn?: TransitionSpec;
   transitionsOut?: TransitionSpec;
+  /** Legacy variants kept for backward compatibility with saved projects */
+  transitions?: { in?: TransitionSpec; out?: TransitionSpec };
+  transitionIn?: TransitionSpec;
+  transitionOut?: TransitionSpec;
 }
 
 export interface AudioTrack {

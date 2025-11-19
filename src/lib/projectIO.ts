@@ -15,6 +15,7 @@ import type {
   TransitionSpec,
 } from "@/types/storyboard";
 import { addBackgroundExportFields } from "@/lib/export/backgroundFields";
+import { DEFAULT_FONT_FAMILY, normalizeFontWeightLabel } from "@/lib/fontConstants";
 
 /* ----------------------------- Shared helpers ----------------------------- */
 const n = (v: any, fb = 0): number =>
@@ -523,7 +524,7 @@ export function exportGraphicsToCSV(
   const mapTrackId = createTrackIdSimplifier();
   const headers = [
     // common
-    "rowType",           // "graphic" | "background"
+    "rowType",           // "graphic" | "text" | "emoji" | "background"
     "trackId",
     "clipId",
     "name",
@@ -535,7 +536,7 @@ export function exportGraphicsToCSV(
     // geometry (graphics only)
     "x", "y", "width", "height",
     "text", "textColor", "fontFamily",
-    "fontSize", "bgColor", "radius", "color", "imageSrc", "emojiUnicode",
+    "fontSize", "fontWeight", "bgColor", "radius", "color", "imageSrc", "emojiUnicode",
 
     // transitions (both)
     "transitionIn.type",
@@ -604,19 +605,41 @@ export function exportGraphicsToCSV(
         c,
         clipName
       );
-      const emojiUnicode = toUnicodePoints(str(c.icon ?? ""));
+      const emojiUnicode = graphicImageSrc ? "" : toUnicodePoints(str(c.icon ?? ""));
 
-      const fontFamily = String((c as any)?.fontFamily ?? (c as any)?.meta?.fontFamily ?? "");
+      const fontFamily = (() => {
+        const raw = (c as any)?.fontFamily ?? (c as any)?.meta?.fontFamily ?? DEFAULT_FONT_FAMILY;
+        const trimmed = String(raw ?? "").trim();
+        return trimmed || DEFAULT_FONT_FAMILY;
+      })();
       const fontSizePx = (() => {
         const v = (c as any)?.fontSize ?? (c as any)?.meta?.fontSize;
         return (typeof v === "number" && Number.isFinite(v)) ? String(v) : "";
       })();
+      const fontWeightLabel = normalizeFontWeightLabel(
+        (c as any)?.fontWeight ?? (c as any)?.meta?.fontWeight
+      );
+
+      const clipTypeLower = typeof c?.type === "string" ? c.type.toLowerCase() : "";
+      const metaTypeLower = typeof c?.meta?.type === "string" ? c.meta.type.toLowerCase() : "";
+      const rowType =
+        (clipTypeLower === "emoji" || metaTypeLower === "emoji")
+          ? "emoji"
+          : ((clipTypeLower === "text" ||
+              metaTypeLower === "text" ||
+              typeof c.content === "string" ||
+              typeof c.text === "string")
+              ? "text"
+              : "graphic");
 
       const tin = serializeTransition(pickGraphicTransition(c, "in"));
       const tout = serializeTransition(pickGraphicTransition(c, "out"));
 
+      const rowFontFamily = rowType === "text" ? fontFamily.replace(/\s+/g, "") : "";
+      const rowFontWeight = rowType === "text" ? fontWeightLabel : "";
+
       rows.push([
-        "graphic",
+        rowType,
         mapTrackId(gTrack.id),
         str(c.id),
         clipName,
@@ -632,8 +655,9 @@ export function exportGraphicsToCSV(
         toPixelCoordinate(c.height, EXPORT_STAGE_HEIGHT),
         str(c.content ?? ""),      // text content
         str(c.textColor ?? ""),
-        fontFamily,
+        rowFontFamily,
         fontSizePx,
+        rowFontWeight,
         str(c.bgColor ?? ""),
         String(c.radius ?? ""),
         str(c.color ?? ""),

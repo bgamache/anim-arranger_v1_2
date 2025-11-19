@@ -6,6 +6,12 @@ import type {
   GraphicTimelineClip,
 } from "@/types/storyboard";
 import { useTimelineStore } from "@/store/TimelineStore";
+import {
+  DEFAULT_FONT_FAMILY,
+  DEFAULT_FONT_WEIGHT_LABEL,
+  fontWeightLabelToCss,
+  normalizeFontWeightLabel,
+} from "@/lib/fontConstants";
 
 /* -------------------------- Types & props -------------------------- */
 interface Track {
@@ -37,6 +43,29 @@ const toUnit = (v: number | undefined, container: number, fallback: number) => {
   if (typeof v !== "number") return fallback;
   const val = v > 1 ? v / Math.max(1, container) : v;
   return clamp01(val);
+};
+
+const FALLBACK_FONT_STACK =
+  'ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji"';
+
+const sanitizeFontFamilyName = (family: string | undefined | null) =>
+  typeof family === "string" ? family.replace(/["']/g, "").trim() : "";
+
+const buildFontStack = (family: string) => {
+  const cleaned = sanitizeFontFamilyName(family);
+  if (!cleaned) return FALLBACK_FONT_STACK;
+  if (cleaned.includes(",")) {
+    return `${cleaned}, ${FALLBACK_FONT_STACK}`;
+  }
+  return `"${cleaned}", ${FALLBACK_FONT_STACK}`;
+};
+
+const resolveGraphicFontFamily = (graphic?: GraphicTimelineClip | null) => {
+  if (!graphic) return "";
+  const direct = sanitizeFontFamilyName(graphic.fontFamily);
+  if (direct) return direct;
+  const metaValue = sanitizeFontFamilyName((graphic as any)?.meta?.fontFamily);
+  return metaValue;
 };
 
 const getClipIcon = (type: TimelineClip["type"]) => {
@@ -376,6 +405,22 @@ export function PreviewWindow({
     [graphics, onGraphicsUpdate, patchGraphicInTracks]
   );
 
+  /* ------------------- Inline text editor: font controls ------------------- */
+  // Font choices (must match the names loaded via <link> in index.html)
+  const FONT_CHOICES = useMemo(
+    () => ["Poppins", "Public Sans", "Lexend", "Bree Serif", "Coming Soon", "Lato", "Londrina Solid", "Caveat Brush"],
+    []
+  );
+
+  const handleFontFamilyChange = useCallback(
+    (graphicId: string, family: string) => {
+      if (!graphicId) return;
+      const normalized = sanitizeFontFamilyName(family) || DEFAULT_FONT_FAMILY;
+      updateGraphic(graphicId, { fontFamily: normalized });
+    },
+    [updateGraphic]
+  );
+
   // track per-clip desired times & handlers (export-mode only)
   const desiredTimeRef = useRef<Record<string, number>>({});
   const seekHandlerRef = useRef<Record<string, (ev?: Event) => void>>({});
@@ -392,6 +437,7 @@ export function PreviewWindow({
   // (optional matte kept only for preview; disable in export to avoid timing cost)
   // no-op here because export uses this path.
   };
+
   const seekAndDrawForExport = (clipId: string, video: HTMLVideoElement, canvas?: HTMLCanvasElement, t?: number) => {
   if (!canvas) return;
   // prevent overlapping handlers
@@ -1040,6 +1086,21 @@ export function PreviewWindow({
                 const isEditing = editingGraphicId === g.id;
                 const displayText = (isEditing ? editingGraphicDraft : (g.content ?? "")).toString();
                 const isSingleLine = !/\r|\n/.test(displayText);
+                const textAlign = (g as any).textAlign || "center";
+                const resolvedClipFontFamily = resolveGraphicFontFamily(g);
+                const fontStack = buildFontStack(resolvedClipFontFamily);
+                const fontWeightLabel = normalizeFontWeightLabel((g as any)?.fontWeight ?? DEFAULT_FONT_WEIGHT_LABEL);
+                const fontWeightValue = fontWeightLabelToCss(fontWeightLabel);
+                const singleLineJustify =
+                  textAlign === "left" ? "flex-start" :
+                  textAlign === "right" ? "flex-end" :
+                  textAlign === "justify" ? "space-between" :
+                  "center";
+                const frameJustifyContent =
+                  textAlign === "left" ? "flex-start" :
+                  textAlign === "right" ? "flex-end" :
+                  textAlign === "justify" ? "space-between" :
+                  "center";
 
                 const trStyle = computeGraphicTransitionStyle(g, currentTime); 
 
@@ -1064,7 +1125,10 @@ export function PreviewWindow({
                     draggable={false}
                     onDragStart={(e) => e.preventDefault()}
                   >
-                    <div className="absolute inset-0 rounded border border-transparent hover:border-yellow-400/40 flex items-center justify-center">
+                    <div
+                      className="absolute inset-0 rounded border border-transparent hover:border-yellow-400/40 flex items-center"
+                      style={{ justifyContent: g.type === "text" ? frameJustifyContent : "center" }}
+                    >
                      {g.type === "text" ? (
                       <>
                         <div
@@ -1080,23 +1144,23 @@ export function PreviewWindow({
                             }
                             graphicEditorRefs.current[g.id] = node;
                           }}
-                          className="font-semibold break-words text-center px-2 outline-none"
+                          className="font-semibold break-words px-2 outline-none"
                           style={{
                             fontSize: `${fontSizePx}px`,
                             color: g.textColor || "#000",
                             backgroundColor: (g as any).bgColor ?? "transparent",
                             borderRadius: `${(g as any).radius ?? 0}px`,
                             padding: (g as any).bgColor ? "6px 10px" : undefined,
-                            fontWeight: (g as any).fontWeight || "600",
-                            textAlign: (g as any).textAlign || "center",
-                            fontFamily: 'ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji"',
+                            fontWeight: fontWeightValue,
+                            textAlign,
+                            fontFamily: fontStack,
                             lineHeight:`${lineHeightPx}px`,
                             userSelect: controlsVisible ? "text" : "none",
                             cursor: controlsVisible ? "text" : "default",
                             whiteSpace: "pre-wrap",
                             display: isSingleLine ? "flex" : undefined,
                             alignItems: isSingleLine ? "center" : undefined,
-                            justifyContent: isSingleLine ? "center" : undefined
+                            justifyContent: isSingleLine ? singleLineJustify : undefined,
                           }}
                           onPointerDown={(e) => {
                             if (!controlsVisible) return;
@@ -1199,6 +1263,18 @@ export function PreviewWindow({
                               placeholder="Edit text…"
                               title="Text"
                             />
+                            {/* font family */}
+                            <select
+                              className="h-6 text-xs bg-background border rounded px-1"
+                              value={resolvedClipFontFamily}
+                              onChange={(e) => handleFontFamilyChange(g.id, e.target.value)}
+                              title="Font family"
+                            >
+                              <option value="" disabled>Select…</option>
+                              {FONT_CHOICES.map((f) => (
+                                <option key={f} value={f}>{f}</option>
+                              ))}
+                            </select>
                             {/* size */}
                             <input
                               type="number"
@@ -1221,7 +1297,11 @@ export function PreviewWindow({
                             <button
                               className="px-1 text-xs rounded hover:bg-background"
                               title="Bold"
-                              onClick={() => updateGraphic(g.id, { fontWeight: (g as any).fontWeight === "700" ? "400" : "700" } as any)}
+                              onClick={() => {
+                                const currentLabel = normalizeFontWeightLabel((g as any)?.fontWeight);
+                                const nextLabel = currentLabel === "Bold" ? "Regular" : "Bold";
+                                updateGraphic(g.id, { fontWeight: nextLabel } as any);
+                              }}
                             >
                               B
                             </button>
